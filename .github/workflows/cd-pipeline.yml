@@ -1,180 +1,94 @@
-name
-: CD Pipeline to Google Cloud Run (staging and production)
-on
-:
-  
-push
-:
-    
-branches
-:
+name: CD Pipeline to Google Cloud Run (Staging and Production)
+
+on:
+  push:
+    branches:
       - staging
-  
-workflow_dispatch
-: {}
-  
-release
-:
-    
-types
-: published
 
-env
-:
-  
-PORT
-: 5001
-  
-IMAGE
-: ${{vars.IMAGE}}:${{github.sha}}
-jobs
-:
-  
-test
-:
-    
-runs-on
-: ubuntu-latest
-    
-name
-: Setup, test, and build project
-    
-steps
-:
-      - 
-name
-: Checkout
-        
-uses
-: actions/checkout@v3
+  workflow_dispatch:
 
-      - 
-name
-: Install dependencies
-        
-run
-: npm ci
+  release:
+    types:
+      - published
 
-      - 
-name
-: Test application
-        
-run
-: npm test
-  
-build
-:
-    
-needs
-: test
-    
-runs-on
-: ubuntu-latest
-    
-name
-: Setup project, Authorize GitHub Actions to GCP and Docker Hub, and deploy
-    
-steps
-:
-      - 
-name
-: Checkout
-        
-uses
-: actions/checkout@v3
+env:
+  PORT: 5001
+  IMAGE: ${{ vars.IMAGE }}:${{ github.sha }}
 
-      - 
-name
-: Authenticate for GCP
-        
-id
-: gcp-auth
-        
-uses
-: google-github-actions/auth@v0
-        
-with
-:
-          
-credentials_json
-: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Setup, Test, and Build Project
 
-      - 
-name
-: Set up Cloud SDK
-        
-uses
-: google-github-actions/setup-gcloud@v0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - 
-name
-: Authenticate for Docker Hub
-        
-id
-: docker-auth
-        
-env
-:
-          
-D_USER
-: ${{secrets.DOCKER_USER}}
-          
-D_PASS
-: ${{secrets.DOCKER_PASSWORD}}
-        
-run
-: |
-          docker login -u $D_USER -p $D_PASS
-      - 
-name
-: Build and tag Image
-        
-run
-: |
-          docker build -t ${{env.IMAGE}} .
-      - 
-name
-: Push the image to Docker hub
-        
-run
-: |
-          docker push ${{env.IMAGE}}
-      - 
-name
-: Enable the Billing API
-        
-run
-: |
-          gcloud services enable cloudbilling.googleapis.com --project=${{secrets.GCP_PROJECT_ID}}
-      - 
-name
-: Deploy to GCP Run - Production environment (If a new release was published from the master branch)
-        
-if
-: github.event_name == 'release' && github.event.action == 'published' && github.event.release.target_commitish == 'main'
-        
-run
-: |
-          gcloud run deploy ${{vars.GCR_PROJECT_NAME}} \
-          --region ${{vars.GCR_REGION}} \
-          --image ${{env.IMAGE}} \
-          --platform "managed" \
-          --allow-unauthenticated \
-          --tag production \
-      - 
-name
-: Deploy to GCP Run - Staging environment
-        
-if
-: github.ref != 'refs/heads/main'
-        
-run
-: |
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Authenticate, Build Docker Image, and Deploy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCP
+        run: gcloud auth configure-docker --quiet
+
+      - name: Authenticate to Docker Hub
+        env:
+          D_USER: ${{ secrets.DOCKER_USER }}
+          D_PASS: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          echo "$D_PASS" | docker login -u "$D_USER" --password-stdin
+
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ env.IMAGE }} .
+
+      - name: Push Docker Image
+        run: |
+          docker push ${{ env.IMAGE }}
+
+      - name: Enable Billing API
+        run: |
+          gcloud services enable cloudbilling.googleapis.com \
+          --project=${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy to Production
+        if: github.event_name == 'release' && github.event.action == 'published' && github.event.release.target_commitish == 'main'
+        run: |
+          gcloud run deploy ${{ vars.GCR_PROJECT_NAME }} \
+            --region=${{ vars.GCR_REGION }} \
+            --image=${{ env.IMAGE }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --tag=production
+
+      - name: Deploy to Staging
+        if: github.ref == 'refs/heads/staging'
+        run: |
           echo "Deploying to staging environment"
-          # Deploy service with to staging environment
-          gcloud run deploy ${{vars.GCR_STAGING_PROJECT_NAME}} \
-          --region ${{vars.GCR_REGION}} \
-          --image ${{env.IMAGE}} \
-          --platform "managed" \
-          --allow-unauthenticated \
-          --tag staging \
+
+          gcloud run deploy ${{ vars.GCR_STAGING_PROJECT_NAME }} \
+            --region=${{ vars.GCR_REGION }} \
+            --image=${{ env.IMAGE }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --tag=staging
